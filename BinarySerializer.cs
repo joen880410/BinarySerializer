@@ -39,7 +39,7 @@ namespace Binary.Serialization
         {
             Type type = obj.GetType();
             FieldInfo[] fields = type.GetFields();
-            PropertyInfo[] properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            PropertyInfo[] properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
             SerializeValue(writer, fields.Length);
             for (int i = 0; i < fields.Length; i++)
             {
@@ -56,10 +56,6 @@ namespace Binary.Serialization
                 {
                     SerializeValue(writer, properties[i].Name);
                     SerializeValue(writer, properties[i].GetValue(obj));
-                }
-                else
-                {
-
                 }
             }
         }
@@ -129,6 +125,11 @@ namespace Binary.Serialization
                 {
                     writer.Write((bool)value);
                 }
+            }
+            else if (type == typeof(DateTime))
+            {
+                DateTime dateTimeValue = (DateTime)value;
+                writer.Write(dateTimeValue.ToBinary());
             }
             else if (type.IsEnum)
             {
@@ -216,11 +217,6 @@ namespace Binary.Serialization
                         {
                             property.SetValue(result, DeserializeValue(reader, property.PropertyType));
                         }
-                        else
-                        {
-
-                        }
-
                     }
                 }
                 return result;
@@ -298,6 +294,10 @@ namespace Binary.Serialization
                     {
                         return reader.ReadBoolean();
                     }
+                }
+                else if (type == typeof(DateTime))
+                {
+                    return DateTime.FromBinary(reader.ReadInt64());
                 }
                 else if (type.IsEnum)
                 {
