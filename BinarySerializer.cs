@@ -1,9 +1,13 @@
-﻿using System;
+﻿using ETModel;
+using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
+using System.Text;
+using UnityEngine;
 
 namespace Binary.Serialization
 {
@@ -12,28 +16,29 @@ namespace Binary.Serialization
         #region Serialize
         public static byte[] Serialize(object obj)
         {
-
             if (obj == null) throw new ArgumentNullException(nameof(obj));
 
             using (var memoryStream = new MemoryStream())
             {
-                using (var writer = new BinaryWriter(memoryStream))
-                {
-                    SerializeValue(writer, obj);
-                }
+                Serialize(memoryStream, obj);
                 return memoryStream.ToArray();
             }
         }
 
         public static void Serialize(Stream output, object obj)
         {
-
             if (obj == null) throw new ArgumentNullException(nameof(obj));
 
             using (var writer = new BinaryWriter(output))
             {
-                SerializeValue(writer, obj);
+                Serialize(writer, obj);
             }
+        }
+        public static void Serialize(BinaryWriter writer, object obj)
+        {
+            if (obj == null) throw new ArgumentNullException(nameof(obj));
+
+            SerializeValue(writer, obj);
         }
         private static void SerializeObject(BinaryWriter writer, object obj)
         {
@@ -63,7 +68,7 @@ namespace Binary.Serialization
         {
             if (value == null)
             {
-                writer.Write(0);
+                writer.Write((byte)0);
                 return;
             }
             Type type = value.GetType();
@@ -71,7 +76,7 @@ namespace Binary.Serialization
             {
                 if (type == typeof(string))
                 {
-                    writer.Write((string)value);
+                    WriteString(writer, (string)value);
                 }
                 else if (type == typeof(decimal))
                 {
@@ -128,12 +133,22 @@ namespace Binary.Serialization
             }
             else if (type == typeof(DateTime))
             {
-                DateTime dateTimeValue = (DateTime)value;
-                writer.Write(dateTimeValue.ToBinary());
+                DateTime time = (DateTime)value;
+                writer.Write(BitConverter.GetBytes(time.ToBinary()));
+            }
+            else if (value is byte[] byteArray)
+            {
+                writer.Write(byteArray.Length);
+                writer.Write(byteArray);
             }
             else if (type.IsEnum)
             {
-                writer.Write(value.ToString());
+                writer.Write((int)value);
+            }
+            else if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(KeyValuePair<,>))
+            {
+                SerializeValue(writer, type.GetProperty("Key").GetValue(value, BindingFlags.Default, null, null, null));
+                SerializeValue(writer, type.GetProperty("Value").GetValue(value, BindingFlags.Default, null, null, null));
             }
             else if (value is IEnumerable && value is ICollection)
             {
@@ -146,10 +161,10 @@ namespace Binary.Serialization
                     SerializeValue(writer, e.Current);
                 }
             }
-            else if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(KeyValuePair<,>))
+            else if (type.IsInterface || type.GetInterfaces() != null)
             {
-                SerializeValue(writer, type.GetProperty("Key").GetValue(value, BindingFlags.Default, null, null, null));
-                SerializeValue(writer, type.GetProperty("Value").GetValue(value, BindingFlags.Default, null, null, null));
+                WriteString(writer, type.AssemblyQualifiedName);// 儲存具體類型
+                SerializeObject(writer, value); // 序列化物件的內容
             }
             else
             {
@@ -157,11 +172,38 @@ namespace Binary.Serialization
             }
         }
 
+        private static void WriteString(BinaryWriter writer, string value)
+        {
+            byte[] utf8Bytes = Encoding.UTF8.GetBytes(value);
+            writer.Write(utf8Bytes.Length);
+            writer.Write(utf8Bytes);
+        }
+
+        private static string ReadString(BinaryReader reader)
+        {
+            int length = reader.ReadInt32();
+            byte[] utf8Bytes = reader.ReadBytes(length);
+            return Encoding.UTF8.GetString(utf8Bytes);
+        }
+
         #endregion
         public static T Deserialize<T>(byte[] bytes)
         {
             return (T)Deserialize(typeof(T), bytes);
         }
+        public static object Deserialize(Type type, Stream stream)
+        {
+            using (BinaryReader reader = new BinaryReader(stream))
+            {
+                return Deserialize(type, reader);
+            }
+        }
+
+        public static object Deserialize(Type type, BinaryReader reader)
+        {
+            return DeserializeValue(reader, type);
+        }
+
         public static object Deserialize(Type type, byte[] bytes)
         {
             int length = bytes.Length;
@@ -175,10 +217,7 @@ namespace Binary.Serialization
             }
             using (MemoryStream stream = new MemoryStream(bytes))
             {
-                using (BinaryReader reader = new BinaryReader(stream))
-                {
-                    return DeserializeValue(reader, type);
-                }
+                return Deserialize(type, stream);
             }
         }
 
@@ -200,7 +239,7 @@ namespace Binary.Serialization
                     int length = reader.ReadInt32();
                     for (int i = 0; i < length; i++)
                     {
-                        string name = reader.ReadString();
+                        string name = ReadString(reader);
                         FieldInfo field = type.GetField(name);
                         if (field != null)
                         {
@@ -210,7 +249,7 @@ namespace Binary.Serialization
                     length = reader.ReadInt32();
                     for (int i = 0; i < length; i++)
                     {
-                        string name = reader.ReadString();
+                        string name = ReadString(reader);
                         PropertyInfo property = type.GetProperty(name);
 
                         if (property != null)
@@ -223,6 +262,7 @@ namespace Binary.Serialization
             }
             catch (Exception e)
             {
+                Debug.LogError(e);
                 return null;
             }
 
@@ -240,7 +280,7 @@ namespace Binary.Serialization
                 {
                     if (type == typeof(string))
                     {
-                        result = reader.ReadString();
+                        result = ReadString(reader);
                     }
                     else if (type == typeof(decimal))
                     {
@@ -299,9 +339,14 @@ namespace Binary.Serialization
                 {
                     return DateTime.FromBinary(reader.ReadInt64());
                 }
+                else if (type == typeof(byte[]))
+                {
+                    int length = reader.ReadInt32();
+                    return reader.ReadBytes(length);
+                }
                 else if (type.IsEnum)
                 {
-                    result = Enum.Parse(type, reader.ReadString());
+                    result = Enum.ToObject(type, reader.ReadInt32());
                 }
                 else if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
                 {
@@ -332,6 +377,22 @@ namespace Binary.Serialization
                     }
                     result = dic;
                 }
+                else if (type.IsInterface || type.GetInterfaces().Length != 0)
+                {
+                    string typeName = ReadString(reader); // 讀取類型名稱
+                    Type concreteType = Type.GetType(typeName);
+
+                    if (concreteType == null)
+                        throw new Exception($"無法解析類型: {typeName}");
+
+                    if (concreteType.GetInterface(type.Name) == null)
+                    {
+                        if (type.FullName != concreteType.FullName)
+                            throw new Exception($"解析類型錯誤: {typeName} typeName:{type.FullName}");
+                    }
+
+                    result = DeserializeObject(reader, concreteType); // 還原內容
+                }
                 else
                 {
                     result = DeserializeObject(reader, type);
@@ -340,6 +401,7 @@ namespace Binary.Serialization
             }
             catch (Exception e)
             {
+                Debug.LogError(e);
                 return null;
 
             }
